@@ -48,10 +48,38 @@ def create_app(config_name=None):
     def list_animals():
         """List all animals."""
         try:
+            status = request.args.get('status')
+            species = request.args.get('species')
+
             animals_list = list(_demo_animals.values())
+
+            if status:
+                animals_list = [a for a in animals_list if a.get('status') == status]
+
+            if species:
+                # case-insensitive match
+                animals_list = [a for a in animals_list if (a.get('species') or '').lower() == species.lower()]
+
             return jsonify({
                 'count': len(animals_list),
                 'animals': animals_list
+            }), 200
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/animals/grouped', methods=['GET'])
+    def grouped_animals():
+        """Return animals grouped by species."""
+        try:
+            animals_list = list(_demo_animals.values())
+            grouped = {}
+            for a in animals_list:
+                key = a.get('species') or 'Unknown'
+                grouped.setdefault(key, []).append(a)
+
+            return jsonify({
+                'groups': grouped,
+                'count': len(animals_list)
             }), 200
         except Exception as e:
             return jsonify({'error': str(e)}), 500
@@ -144,11 +172,57 @@ def create_app(config_name=None):
         """Get GPS history for animal."""
         try:
             from flask import request
+            import datetime
+
+            # Query params: limit (int), start (ISO datetime), end (ISO datetime)
             limit = request.args.get('limit', 100, type=int)
-            
-            events = _demo_gps_events.get(animal_id, [])
+            start = request.args.get('start')
+            end = request.args.get('end')
+
+            events = list(_demo_gps_events.get(animal_id, []))
+
+            def parse_iso(s: str):
+                if not s:
+                    return None
+                try:
+                    # strip trailing Z if present
+                    s2 = s.rstrip('Z')
+                    return datetime.datetime.fromisoformat(s2)
+                except Exception:
+                    try:
+                        # fallback: attempt to parse as naive datetime
+                        return datetime.datetime.strptime(s, '%Y-%m-%dT%H:%M:%S')
+                    except Exception:
+                        return None
+
+            start_dt = parse_iso(start)
+            end_dt = parse_iso(end)
+
+            if start_dt or end_dt:
+                filtered = []
+                for e in events:
+                    ts = e.get('timestamp')
+                    if not ts:
+                        continue
+                    t = None
+                    try:
+                        t = datetime.datetime.fromisoformat(ts.rstrip('Z'))
+                    except Exception:
+                        try:
+                            t = datetime.datetime.strptime(ts, '%Y-%m-%dT%H:%M:%S')
+                        except Exception:
+                            continue
+
+                    if start_dt and t < start_dt:
+                        continue
+                    if end_dt and t > end_dt:
+                        continue
+                    filtered.append(e)
+
+                events = filtered
+
             history = events[-limit:] if limit else events
-            
+
             return jsonify({
                 'animal_id': animal_id,
                 'events': history
