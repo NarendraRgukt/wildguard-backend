@@ -1,0 +1,21 @@
+# Backend-specific ignore rules
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Virtualenv
+venv/
+.venv/
+venv
+
+# Environment
+.env
+.env.local
+
+# Logs
+logs/
+*.log
+
+# Database
+*.db
