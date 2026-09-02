@@ -1,6 +1,9 @@
 from flask import Flask, jsonify, request
 import sys
 import os
+import subprocess
+import threading
+from pathlib import Path
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,7 +22,13 @@ _demo_gps_events = {}
 _demo_camera_events = []
 _demo_alerts = {}
 _alert_subscribers = []  # For real-time SSE
+_simulation_process = None
+_simulation_lock = threading.Lock()
 
+
+def _simulation_script_path():
+    """Return the simulator bundled with the backend service."""
+    return Path(__file__).resolve().parents[1] / 'scripts' / 'simulate_animals.py'
 def create_app(config_name=None):
     """Application factory function."""
     if config_name is None:
@@ -41,7 +50,30 @@ def create_app(config_name=None):
     @app.route('/health', methods=['GET'])
     def health():
         return jsonify({'status': 'healthy', 'message': 'WildGuard Backend API is running'}), 200
-    
+
+    @app.route('/api/simulation', methods=['GET'])
+    def simulation_status():
+        with _simulation_lock:
+            running = _simulation_process is not None and _simulation_process.poll() is None
+        return jsonify({'running': running}), 200
+
+    @app.route('/api/simulation/start', methods=['POST'])
+    def start_simulation():
+        global _simulation_process
+        with _simulation_lock:
+            if _simulation_process is not None and _simulation_process.poll() is None:
+                return jsonify({'running': True, 'message': 'Simulation is already running'}), 200
+            script_path = _simulation_script_path()
+            if not script_path.exists():
+                return jsonify({'error': 'Bundled simulator script was not found'}), 500
+            environment = os.environ.copy()
+            environment['API_BASE_URL'] = request.host_url.rstrip('/') + '/api'
+            environment['BACKEND_DIR'] = str(Path(__file__).resolve().parents[2])
+            try:
+                _simulation_process = subprocess.Popen([sys.executable, str(script_path)], cwd=str(script_path.parent), env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError as error:
+                return jsonify({'error': f'Unable to start simulation: {error}'}), 500
+        return jsonify({'running': True, 'message': 'Animal simulation started'}), 202
     # ==================== ANIMALS ENDPOINTS ====================
     
     @app.route('/api/animals', methods=['GET'])
