@@ -3,6 +3,7 @@ import sys
 import os
 import subprocess
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Add parent directory to path for imports
@@ -29,12 +30,76 @@ _simulation_lock = threading.Lock()
 def _simulation_script_path():
     """Return the simulator bundled with the backend service."""
     return Path(__file__).resolve().parents[1] / 'scripts' / 'simulate_animals.py'
+
+
+def _seed_demo_data():
+    """Populate the in-memory API with a useful dashboard state on startup."""
+    if _demo_animals:
+        return
+
+    now = datetime.now(timezone.utc)
+    created_at = (now - timedelta(minutes=15)).isoformat()
+    animals = [
+        ('ELE_001', 'Elephant', 'COLLAR_ELE_001', 12.3459, 76.5436, 4.2, 82),
+        ('TIG_001', 'Tiger', 'COLLAR_TIG_001', 12.3428, 76.5398, 2.7, 128),
+        ('LEO_001', 'Leopard', 'COLLAR_LEO_001', 12.3491, 76.5474, 1.9, 224),
+    ]
+
+    for animal_id, species, collar_id, latitude, longitude, speed, heading in animals:
+        _demo_animals[animal_id] = {
+            'id': animal_id,
+            'animal_code': animal_id,
+            'species': species,
+            'collar_id': collar_id,
+            'status': 'ACTIVE',
+            'created_at': created_at,
+        }
+        _demo_gps_events[animal_id] = [{
+            'id': f'GPS_{animal_id}',
+            'animal_id': animal_id,
+            'latitude': latitude,
+            'longitude': longitude,
+            'speed': speed,
+            'heading': heading,
+            'timestamp': now.isoformat(),
+        }]
+
+    _demo_camera_events.extend([{
+        'id': 'CAM_EVENT_001',
+        'camera_id': 'CAM_01',
+        'timestamp': now.isoformat(),
+        'object_type': 'animal',
+        'species': 'Elephant',
+        'confidence': 0.96,
+        'latitude': 12.3459,
+        'longitude': 76.5436,
+        'image_path': None,
+    }])
+
+    _demo_alerts['ALERT_001'] = {
+        'id': 'ALERT_001',
+        'animal_id': 'ELE_001',
+        'species': 'Elephant',
+        'threat_type': 'VILLAGE',
+        'severity': 'HIGH',
+        'risk_score': 82,
+        'description': 'Elephant is approaching the monitored village boundary.',
+        'investigation_summary': 'Camera confirmation received from CAM_01.',
+        'gps_location': {'latitude': 12.3459, 'longitude': 76.5436},
+        'cctv_confirmed': True,
+        'anomaly_detected': True,
+        'status': 'DETECTED',
+        'created_at': now.isoformat(),
+    }
+
+
 def create_app(config_name=None):
     """Application factory function."""
     if config_name is None:
         config_name = os.getenv('FLASK_ENV', 'development')
     
     app = Flask(__name__)
+    _seed_demo_data()
     
     # Load configuration if available
     if HAS_EXTENSIONS:
@@ -68,7 +133,7 @@ def create_app(config_name=None):
                 return jsonify({'error': 'Bundled simulator script was not found'}), 500
             environment = os.environ.copy()
             environment['API_BASE_URL'] = request.host_url.rstrip('/') + '/api'
-            environment['BACKEND_DIR'] = str(Path(__file__).resolve().parents[2])
+            environment['BACKEND_DIR'] = str(Path(__file__).resolve().parents[1])
             try:
                 _simulation_process = subprocess.Popen([sys.executable, str(script_path)], cwd=str(script_path.parent), env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except OSError as error:
@@ -403,10 +468,15 @@ def create_app(config_name=None):
         
         def generate():
             try:
+                # Send startup alerts so a newly loaded dashboard renders them
+                # before any real-time events occur.
+                import json
+                for alert in _demo_alerts.values():
+                    if alert.get('status') == 'DETECTED':
+                        yield f"data: {json.dumps(alert)}\n\n"
                 while True:
                     try:
                         alert = alert_queue.get(timeout=30)
-                        import json
                         yield f"data: {json.dumps(alert)}\n\n"
                     except:
                         yield ": keepalive\n\n"
